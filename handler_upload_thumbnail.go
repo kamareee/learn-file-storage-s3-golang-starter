@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,7 +36,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
+	// upload implementation
 	const MaxMemory = 10 << 20 // 10 MB
 	err = r.ParseMultipartForm(MaxMemory)
 	if err != nil {
@@ -48,16 +51,9 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	defer file.Close()
 
-	mediaType := header.Header.Get("Content-Type")
-
-	videoData, err := cfg.db.GetVideo(videoID)
+	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Failed to get video data", err)
-		return
-	}
-
-	if videoData.UserID != userID {
-		w.WriteHeader(http.StatusUnauthorized)
+		respondWithError(w, http.StatusBadRequest, "Failed to parse media type", err)
 		return
 	}
 
@@ -72,7 +68,22 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	assetPath := filepath.Join(cfg.assetsRoot, fmt.Sprintf("%s.%s", videoID.String(), ext))
+	videoData, err := cfg.db.GetVideo(videoID)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to get video data", err)
+		return
+	}
+
+	if videoData.UserID != userID {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	thumbnailId := make([]byte, 32)
+	rand.Read(thumbnailId)
+	encodedThumbnailId := base64.RawURLEncoding.EncodeToString(thumbnailId)
+
+	assetPath := filepath.Join(cfg.assetsRoot, fmt.Sprintf("%s.%s", encodedThumbnailId, ext))
 	dstFile, err := os.Create(assetPath)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to create thumbnail file", err)
@@ -86,7 +97,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s.%s", cfg.port, videoID.String(), ext)
+	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s.%s", cfg.port, encodedThumbnailId, ext)
 	videoData.ThumbnailURL = &thumbnailURL
 	err = cfg.db.UpdateVideo(videoData)
 	if err != nil {
